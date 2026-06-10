@@ -7,6 +7,8 @@ export default function useConsoleRouteState() {
   const [isPublicHealth, setIsPublicHealth] = useState(false);
 
   const parsePath = () => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('code') && params.has('state')) return;
     if (window.location.pathname === '/health') {
       setIsPublicHealth(true);
       setView('select');

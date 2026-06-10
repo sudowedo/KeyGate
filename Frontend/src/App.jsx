@@ -7,6 +7,8 @@ import CreateProjectView from './views/CreateProjectView';
 import NotFoundView from './views/NotFoundView';
 import ConsoleShell from './views/ConsoleShell';
 import HealthPage from './components/pages/HealthPage';
+import LoginView from './views/LoginView';
+import { useAuth } from './contexts/AuthContext';
 import { LogoIcon } from './components/parts/Logo';
 
 // ── Splash screen shown during initial boot ──
@@ -93,7 +95,7 @@ function AppRouter({ routeState }) {
   const { ctx } = useKeyGate();
 
   if (isPublicHealth) {
-    const publicCtx = { ...ctx, api: (path, opts = {}) => ctx.api(path, { ...opts, headers: {} }) };
+    const publicCtx = { ...ctx, api: (path, opts = {}) => ctx.api(path, { ...opts, skipAuth: true, headers: {} }) };
     return <HealthPage ctx={publicCtx} publicMode />;
   }
 
@@ -131,28 +133,41 @@ function AppShell({ children }) {
 export default function App() {
   const routeState = useConsoleRouteState();
   const { projectSlug, page, isPublicHealth } = routeState;
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [booted, setBooted] = useState(false);
   const [hasError, setHasError] = useState(null);
+
+  useEffect(() => { setBooted(false); }, [isAuthenticated]);
 
   if (hasError) {
     return <AppError error={hasError} onRetry={() => setHasError(null)} />;
   }
 
+  if (authLoading) return <BootSplash />;
+
   return (
     <KeyGateProvider projectSlug={isPublicHealth ? '' : projectSlug} page={page}>
       <AppShell>
-        {!booted && (
-          <BootLoader
-            go={routeState.go}
-            view={routeState.view}
-            projectSlug={projectSlug}
-            onBootComplete={() => setBooted(true)}
-          />
-        )}
-        {booted ? (
+        {!isPublicHealth && !isAuthenticated ? (
+          <LoginView />
+        ) : isPublicHealth ? (
           <AppRouter routeState={routeState} />
         ) : (
-          <BootSplash />
+          <>
+            {!booted && (
+              <BootLoader
+                go={routeState.go}
+                view={routeState.view}
+                projectSlug={projectSlug}
+                onBootComplete={() => setBooted(true)}
+              />
+            )}
+            {booted ? (
+              <AppRouter routeState={routeState} />
+            ) : (
+              <BootSplash />
+            )}
+          </>
         )}
       </AppShell>
     </KeyGateProvider>

@@ -1,7 +1,9 @@
 import { LogoFull } from './Logo';
 import { IconBell, IconMenu, IconExternal } from './Icons';
+import { useAuth } from '../../contexts/AuthContext';
 
 export default function ConsoleHeader({ page, selectedProject, projectSlug, onSwitchProject, onOpenMobileMenu, onOpenNotifications, mobileMenuOpen = false }) {
+  const { user, logout } = useAuth();
   const pageTitle = String(page || 'overview').replace(/^./, (m) => m.toUpperCase());
 
   return <header className='console-header app-shell-header'>
@@ -13,7 +15,7 @@ export default function ConsoleHeader({ page, selectedProject, projectSlug, onSw
         <div className='console-title'>{selectedProject?.name || 'Project'} <span style={{color:'var(--muted)',fontWeight:400}}>&bull;</span> {pageTitle}</div>
         <div className='console-sub'>{selectedProject?.slug || projectSlug} &middot; API Access Manager</div>
       </div>
-      <button className='btn btn-ghost btn-sm app-shell-switch' onClick={onSwitchProject}><IconExternal width={14} height={14} /> Switch project</button>
+      <div className='app-shell-actions'><button className='btn btn-ghost btn-sm app-shell-switch' onClick={onSwitchProject}><IconExternal width={14} height={14} /> Switch project</button><div className='auth-user-chip'><span>{user?.picture ? <img src={user.picture} alt='' /> : (user?.email || user?.name || 'U').charAt(0).toUpperCase()}</span><strong>{user?.email || user?.name || 'Signed in'}</strong></div><button className='btn btn-ghost btn-sm' onClick={logout}>Logout</button></div>
     </div>
 
     <div className='mobile-appbar app-shell-mobile'>
@@ -26,8 +28,8 @@ export default function ConsoleHeader({ page, selectedProject, projectSlug, onSw
       </div>
       <div className='mobile-appbar-actions'>
         <button className='mobile-icon-btn' onClick={onOpenNotifications} aria-label='Notifications'><IconBell width={20} height={20} /></button>
-        <button className='mobile-avatar' onClick={onSwitchProject} aria-label='Back to console'>
-          {selectedProject?.name?.charAt(0)?.toUpperCase() || 'K'}
+        <button className='mobile-avatar' onClick={logout} aria-label='Logout'>
+          {(user?.email || selectedProject?.name || 'K').charAt(0).toUpperCase()}
         </button>
       </div>
     </div>
