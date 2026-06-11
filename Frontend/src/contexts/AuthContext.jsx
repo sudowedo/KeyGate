@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { cacheClearAll } from '../lib/cache';
 
 const AuthContext = createContext(null);
 const STORAGE_KEY = 'keygate_auth_session';
@@ -121,6 +122,7 @@ export function AuthProvider({ children }) {
       }
       try {
         const nextSession = await exchangeCodeForToken(code, verifier);
+        cacheClearAll();
         if (!cancelled) setSession(nextSession);
         const returnTo = sessionStorage.getItem('keygate_return_to') || '/console';
         sessionStorage.removeItem('keygate_return_to');
@@ -164,6 +166,7 @@ export function AuthProvider({ children }) {
   };
 
   const logout = () => {
+    cacheClearAll();
     localStorage.removeItem(STORAGE_KEY);
     setSession(null);
     if (!isConfigured) return;

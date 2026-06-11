@@ -73,6 +73,18 @@ async function verifyAuth0Token(token) {
   return jwt.payload;
 }
 
+function configuredLegacyOwnerEmails() {
+  return String(process.env.KEYGATE_LEGACY_OWNER_EMAILS || process.env.INITIAL_OWNER_EMAIL || process.env.ADMIN_EMAIL || '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function canClaimLegacyData(user) {
+  const email = String(user?.email || '').trim().toLowerCase();
+  return Boolean(email && configuredLegacyOwnerEmails().includes(email));
+}
+
 function slugify(value) {
   const base = String(value || 'workspace').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'workspace';
   return `${base}-${createHash('sha1').update(`${value}:${Date.now()}:${Math.random()}`).digest('hex').slice(0, 6)}`;
@@ -122,7 +134,9 @@ async function ensureDefaultOrganization(user) {
        ON CONFLICT (organization_id, user_id) DO NOTHING`,
       [organizationId, user.id],
     );
-    await query('UPDATE projects SET organization_id = $1 WHERE organization_id IS NULL', [organizationId]);
+    if (canClaimLegacyData(user)) {
+      await query('UPDATE projects SET organization_id = $1 WHERE organization_id IS NULL', [organizationId]);
+    }
     await query('COMMIT');
     return { ...rows[0], role: 'owner' };
   } catch (err) {

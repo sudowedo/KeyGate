@@ -12,8 +12,12 @@ const TTL = {
 
 const DEFAULT_TTL = 60 * 1000; // 1 min fallback
 
-function cacheKey(path) {
-  return KEY_PREFIX + path;
+function safeScope(scope = 'public') {
+  return String(scope || 'public').replace(/[^a-zA-Z0-9._:-]/g, '_');
+}
+
+function cacheKey(path, scope = 'public') {
+  return `${KEY_PREFIX}${safeScope(scope)}:${path}`;
 }
 
 function ttlFor(path) {
@@ -23,13 +27,13 @@ function ttlFor(path) {
   return DEFAULT_TTL;
 }
 
-export function cacheGet(path) {
+export function cacheGet(path, scope = 'public') {
   try {
-    const raw = localStorage.getItem(cacheKey(path));
+    const raw = localStorage.getItem(cacheKey(path, scope));
     if (!raw) return null;
     const entry = JSON.parse(raw);
     if (Date.now() - entry.ts > entry.ttl) {
-      localStorage.removeItem(cacheKey(path));
+      localStorage.removeItem(cacheKey(path, scope));
       return null;
     }
     return entry.data;
@@ -38,19 +42,19 @@ export function cacheGet(path) {
   }
 }
 
-export function cacheSet(path, data) {
+export function cacheSet(path, data, scope = 'public') {
   try {
     const entry = { data, ts: Date.now(), ttl: ttlFor(path) };
-    localStorage.setItem(cacheKey(path), JSON.stringify(entry));
+    localStorage.setItem(cacheKey(path, scope), JSON.stringify(entry));
   } catch {
     // localStorage full or unavailable — silently skip
   }
 }
 
-/** Bust exact path or any path starting with prefix. */
-export function cacheBust(pathOrPrefix) {
+/** Bust exact path or any path starting with prefix for one cache scope. */
+export function cacheBust(pathOrPrefix, scope = 'public') {
   try {
-    const prefix = cacheKey(pathOrPrefix);
+    const prefix = cacheKey(pathOrPrefix, scope);
     const toRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
@@ -64,7 +68,7 @@ export function cacheBust(pathOrPrefix) {
   }
 }
 
-/** Bust all kg_cache_ entries — call on logout or hard reset. */
+/** Bust all kg_cache_ entries — call on logout, login, or hard reset. */
 export function cacheClearAll() {
   try {
     const toRemove = [];

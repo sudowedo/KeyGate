@@ -132,3 +132,21 @@ VITE_AUTH0_AUDIENCE=https://your-api-identifier
 ```
 
 `VITE_AUTH0_CLIENT_ID` is also supported as an alias for `VITE_CLIENT_ID`.
+
+## User data isolation
+
+Dashboard data is scoped by Auth0 user and local organization membership:
+
+```text
+Auth0 user → users → organization_members → organizations → projects → master_keys / subkeys / logs
+```
+
+A new authenticated user gets a new local organization and starts with no projects. Existing legacy projects with `organization_id IS NULL` are **not** automatically assigned to random signups.
+
+If you intentionally need to claim old pre-auth projects for one owner, set this backend variable before that owner signs in:
+
+```env
+KEYGATE_LEGACY_OWNER_EMAILS=owner@example.com
+```
+
+Multiple comma-separated emails are supported. Leave it unset in production if every new signup should start fresh.
