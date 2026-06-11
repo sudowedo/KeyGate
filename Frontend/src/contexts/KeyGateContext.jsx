@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useMemo, useEffect } from 'react';
-import { cacheGet, cacheSet, cacheBust } from '../lib/cache';
+import { cacheGet, cacheSet, cacheBust, setCacheScope } from '../lib/cache';
 import { useAuth } from './AuthContext';
 
 const CTX = createContext(null);
@@ -34,6 +34,10 @@ export default function KeyGateProvider({ children, projectSlug, page }) {
   const [copiedItem, setCopiedItem] = useState('');
 
   const notify = (msg, type = 'success') => { setNotif({ show: true, msg, type }); setTimeout(() => setNotif((v) => ({ ...v, show: false })), 3000); };
+
+  useEffect(() => {
+    setCacheScope(isAuthenticated && user?.sub ? user.sub : 'public');
+  }, [isAuthenticated, user?.sub]);
 
   const copyText = async (text, id = '') => {
     try {
@@ -102,8 +106,6 @@ export default function KeyGateProvider({ children, projectSlug, page }) {
   };
 
   const loadOverview = async () => {
-    cacheBust('/api/subkeys', user?.sub || 'anonymous');
-    cacheBust('/api/analytics', user?.sub || 'anonymous');
     setLoading((v) => ({ ...v, overview: true }));
     try {
       const [sks, an] = await Promise.all([api('/api/subkeys'), api('/api/analytics')]);
@@ -116,21 +118,18 @@ export default function KeyGateProvider({ children, projectSlug, page }) {
   };
 
   const loadMasterKeys = async () => {
-    cacheBust('/api/master-keys', user?.sub || 'anonymous');
     setLoading((v) => ({ ...v, masterkeys: true }));
     try { setMasterKeys(await api('/api/master-keys')); }
     finally { setLoading((v) => ({ ...v, masterkeys: false })); }
   };
 
   const loadSubkeys = async () => {
-    cacheBust('/api/subkeys', user?.sub || 'anonymous');
     setLoading((v) => ({ ...v, subkeys: true }));
     try { setSubkeys(await api('/api/subkeys')); }
     finally { setLoading((v) => ({ ...v, subkeys: false })); }
   };
 
   const loadLogs = async () => {
-    cacheBust('/api/analytics', user?.sub || 'anonymous');
     setLoading((v) => ({ ...v, logs: true }));
     try {
       const an = await api('/api/analytics');

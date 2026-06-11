@@ -12,11 +12,16 @@ const TTL = {
 
 const DEFAULT_TTL = 60 * 1000; // 1 min fallback
 
-function safeScope(scope = 'public') {
-  return String(scope || 'public').replace(/[^a-zA-Z0-9._:-]/g, '_');
+function currentScope() {
+  if (typeof window !== 'undefined' && window.__KEYGATE_CACHE_SCOPE) return window.__KEYGATE_CACHE_SCOPE;
+  return 'public';
 }
 
-function cacheKey(path, scope = 'public') {
+function safeScope(scope) {
+  return String(scope || currentScope()).replace(/[^a-zA-Z0-9._:-]/g, '_');
+}
+
+function cacheKey(path, scope) {
   return `${KEY_PREFIX}${safeScope(scope)}:${path}`;
 }
 
@@ -27,7 +32,7 @@ function ttlFor(path) {
   return DEFAULT_TTL;
 }
 
-export function cacheGet(path, scope = 'public') {
+export function cacheGet(path, scope) {
   try {
     const raw = localStorage.getItem(cacheKey(path, scope));
     if (!raw) return null;
@@ -42,7 +47,7 @@ export function cacheGet(path, scope = 'public') {
   }
 }
 
-export function cacheSet(path, data, scope = 'public') {
+export function cacheSet(path, data, scope) {
   try {
     const entry = { data, ts: Date.now(), ttl: ttlFor(path) };
     localStorage.setItem(cacheKey(path, scope), JSON.stringify(entry));
@@ -52,7 +57,7 @@ export function cacheSet(path, data, scope = 'public') {
 }
 
 /** Bust exact path or any path starting with prefix for one cache scope. */
-export function cacheBust(pathOrPrefix, scope = 'public') {
+export function cacheBust(pathOrPrefix, scope) {
   try {
     const prefix = cacheKey(pathOrPrefix, scope);
     const toRemove = [];
@@ -87,4 +92,9 @@ if (typeof window !== 'undefined') {
   window.cacheClearAll = cacheClearAll;
   window.cacheBust = cacheBust;
   window.cacheGet = cacheGet;
+  window.cacheScope = () => currentScope();
+}
+
+export function setCacheScope(scope) {
+  if (typeof window !== 'undefined') window.__KEYGATE_CACHE_SCOPE = safeScope(scope || 'public');
 }
