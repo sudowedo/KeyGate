@@ -69,6 +69,55 @@ function decryptSecret(record, aad = '') {
   return plaintext.toString('utf8');
 }
 
+
+async function ensureAuthSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id UUID PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT UNIQUE,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id UUID PRIMARY KEY,
+      auth0_sub TEXT NOT NULL UNIQUE,
+      email TEXT,
+      name TEXT,
+      picture_url TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS organizations (
+      id UUID PRIMARY KEY,
+      auth0_org_id TEXT UNIQUE,
+      name TEXT NOT NULL,
+      slug TEXT UNIQUE,
+      owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS organization_members (
+      organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner','admin','member','viewer')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (organization_id, user_id)
+    );
+
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
+
+    CREATE INDEX IF NOT EXISTS idx_users_auth0_sub ON users(auth0_sub);
+    CREATE INDEX IF NOT EXISTS idx_organizations_owner_user_id ON organizations(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_organization_members_user_id ON organization_members(user_id);
+    CREATE INDEX IF NOT EXISTS idx_projects_organization_id ON projects(organization_id);
+  `);
+}
+
 async function query(text, params = []) {
   return pool.query(text, params);
 }
@@ -142,6 +191,7 @@ async function initDb() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+    await ensureAuthSchema();
   } catch (err) {
     if (err && /client password must be a string|no password supplied|SASL|SCRAM/i.test(err.message || '')) {
       throw new Error(

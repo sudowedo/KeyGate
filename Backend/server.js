@@ -5,6 +5,7 @@ const { randomUUID, createHash } = require('crypto');
 const fastify = require('fastify')({ logger: { level: 'info' }, genReqId: () => randomUUID() });
 const { createClient } = require('redis');
 const { query, initDb, encryptSecret, decryptSecret } = require('./db');
+const { requireAuth, requireOrgRole, loadUserOrganizations } = require('./auth');
 const { listProviders, listModels, getProvider, getProviderForModel, getDefaultModel, isModelAllowedForProvider, normalizeAllowedModels, normalizeProviderModel, normalizeUsage, estimateCostUsd, callProvider, normalizeProviderResponse } = require('./providers');
 
 const DEFAULT_RPM_LIMIT = Number(process.env.RATE_LIMIT_DEFAULT_PER_MIN || 2);
@@ -104,6 +105,7 @@ fastify.get('/api/health', async () => {
 });
 
 fastify.post('/api/health/refresh-now', async (req, reply) => {
+  const auth = await requireOrgRole(req, reply, ['owner', 'admin']); if (!auth) return;
   try {
     let db_ok = false; let redis_ok = false;
     try { await query('SELECT 1'); db_ok = true; } catch (_) {}
@@ -121,7 +123,8 @@ fastify.post('/api/health/refresh-now', async (req, reply) => {
   }
 });
 
-fastify.get('/api/admin/error-logs', async (req) => {
+fastify.get('/api/admin/error-logs', async (req, reply) => {
+  const auth = await requireOrgRole(req, reply, ['owner', 'admin']); if (!auth) return;
   const limitRaw = Number(req.query?.limit || 100);
   const limit = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? Math.round(limitRaw) : 100));
   const before = req.query?.before ? Number(req.query.before) : null;
@@ -143,13 +146,28 @@ fastify.get('/api/admin/error-logs', async (req) => {
   return rows;
 });
 
+
+fastify.get('/api/me', async (req, reply) => {
+  const auth = await requireAuth(req, reply); if (!auth) return;
+  const organizations = await loadUserOrganizations(auth.user.id);
+  return { user: auth.user, organization: auth.organization, organizations };
+});
+
 async function getProject(req, reply) {
+  const auth = await requireAuth(req, reply); if (!auth) return null;
   const projectRef = String(req.headers['x-project-id'] || '').trim();
   if (!projectRef) {
     reply.code(400).send(ERR('MISSING_PROJECT_HEADER', 'Missing x-project-id header'));
     return null;
   }
-  const { rows } = await query(`SELECT id,name,slug,status FROM projects WHERE id::text = $1 OR slug = $1 LIMIT 1`, [projectRef]);
+  const { rows } = await query(
+    `SELECT p.id,p.name,p.slug,p.status,p.organization_id,om.role AS organization_role
+     FROM projects p
+     JOIN organization_members om ON om.organization_id = p.organization_id AND om.user_id = $2
+     WHERE (p.id::text = $1 OR p.slug = $1)
+     LIMIT 1`,
+    [projectRef, auth.user.id],
+  );
   const project = rows[0];
   if (!project) {
     reply.code(404).send(ERR('PROJECT_NOT_FOUND', 'project not found'));
@@ -159,11 +177,19 @@ async function getProject(req, reply) {
     reply.code(403).send(ERR('PROJECT_INACTIVE', 'project is not active'));
     return null;
   }
+  req.projectRole = project.organization_role;
   return project;
 }
 
-fastify.get('/api/projects', async () => {
-  const { rows } = await query(`SELECT id,name,slug,status,EXTRACT(EPOCH FROM created_at)::bigint AS created_at FROM projects ORDER BY created_at DESC`);
+fastify.get('/api/projects', async (req, reply) => {
+  const auth = await requireAuth(req, reply); if (!auth) return;
+  const { rows } = await query(
+    `SELECT p.id,p.name,p.slug,p.status,p.organization_id,om.role AS organization_role,EXTRACT(EPOCH FROM p.created_at)::bigint AS created_at
+     FROM projects p
+     JOIN organization_members om ON om.organization_id = p.organization_id AND om.user_id = $1
+     ORDER BY p.created_at DESC`,
+    [auth.user.id],
+  );
   return rows;
 });
 
@@ -172,18 +198,25 @@ fastify.post('/api/projects', {
 }, async (req, reply) => {
   const { name, slug = null } = req.body || {};
   if (!name) return reply.code(400).send(ERR('VALIDATION_ERROR', 'name required'));
-  const { rows: countRows } = await query('SELECT COUNT(*)::int AS c FROM projects');
+  const auth = await requireOrgRole(req, reply, ['owner', 'admin']); if (!auth) return;
+  const { rows: countRows } = await query('SELECT COUNT(*)::int AS c FROM projects WHERE organization_id = $1', [auth.organization.id]);
   if ((countRows[0]?.c || 0) >= 3) return reply.code(400).send(ERR('PROJECT_LIMIT_REACHED', 'max 3 projects allowed for now'));
   const id = randomUUID();
   const generatedSlug = `project-${Math.random().toString(36).slice(2, 10)}`;
-  await query(`INSERT INTO projects (id,name,slug,status) VALUES ($1,$2,$3,$4)`, [id, String(name).trim(), slug ? String(slug).trim() : generatedSlug, 'active']);
+  await query(`INSERT INTO projects (id,name,slug,status,organization_id) VALUES ($1,$2,$3,$4,$5)`, [id, String(name).trim(), slug ? String(slug).trim() : generatedSlug, 'active', auth.organization.id]);
   return { id, name: String(name).trim(), slug: slug ? String(slug).trim() : generatedSlug, status: 'active', created_at: Math.floor(Date.now()/1000) };
 });
 
-async function deleteProjectByRef(projectRef) {
+async function deleteProjectByRef(req, reply, projectRef) {
+  const auth = await requireOrgRole(req, reply, ['owner', 'admin']); if (!auth) return null;
   const ref = String(projectRef || '').trim();
   if (!ref) return { success: true, deleted: false, reason: 'empty_ref' };
-  const { rows } = await query('SELECT id,slug FROM projects WHERE slug = $1 OR id::text = $1 LIMIT 1', [ref]);
+  const { rows } = await query(
+    `SELECT p.id,p.slug FROM projects p
+     JOIN organization_members om ON om.organization_id = p.organization_id AND om.user_id = $2
+     WHERE (p.slug = $1 OR p.id::text = $1) LIMIT 1`,
+    [ref, auth.user.id],
+  );
   const project = rows[0];
   if (!project) return { success: true, deleted: false, reason: 'not_found' };
   await query('DELETE FROM projects WHERE id = $1', [project.id]);
@@ -194,7 +227,7 @@ fastify.delete('/api/projects/:id', {
   schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', minLength: 1 } } } },
 }, async (req, reply) => {
   try {
-    return await deleteProjectByRef(req.params.id);
+    return await deleteProjectByRef(req, reply, req.params.id);
   } catch (err) {
     req.log.error(err);
     return reply.code(500).send(ERR('INTERNAL_ERROR', 'failed to delete project'));
@@ -208,7 +241,7 @@ fastify.route({
   url: '/api/projects/by-slug/:slug',
   handler: async (req, reply) => {
     try {
-      return await deleteProjectByRef(req.params.slug);
+      return await deleteProjectByRef(req, reply, req.params.slug);
     } catch (err) {
       req.log.error(err);
       return reply.code(500).send({ success: false, deleted: false, reason: 'internal_error' });
@@ -231,6 +264,7 @@ fastify.post('/api/master-keys', {
   schema: { body: { type: 'object', required: ['provider', 'api_key'], properties: { provider: { type: 'string' }, api_key: { type: 'string', minLength: 1 }, name: { type: 'string' } } } },
 }, async (req, reply) => {
   const project = await getProject(req, reply); if (!project) return;
+  if (!['owner', 'admin'].includes(project.organization_role)) return reply.code(403).send(ERR('FORBIDDEN', 'Your organization role does not allow this action.'));
   const { provider, api_key, name } = req.body || {};
   if (!provider || !api_key) return reply.code(400).send(ERR('VALIDATION_ERROR', 'provider and api_key required'));
   if (!getProvider(provider)) return reply.code(400).send(ERR('UNKNOWN_PROVIDER', `Unknown provider ${provider}`));
@@ -246,6 +280,7 @@ fastify.post('/api/master-keys', {
 
 fastify.delete('/api/master-keys/:id', async (req, reply) => {
   const project = await getProject(req, reply); if (!project) return;
+  if (!['owner', 'admin'].includes(project.organization_role)) return reply.code(403).send(ERR('FORBIDDEN', 'Your organization role does not allow this action.'));
   const { id } = req.params;
   try {
     await query('BEGIN');
@@ -265,6 +300,7 @@ fastify.delete('/api/master-keys/:id', async (req, reply) => {
 
 fastify.delete('/api/subkeys/:id', async (req, reply) => {
   const project = await getProject(req, reply); if (!project) return;
+  if (!['owner', 'admin', 'member'].includes(project.organization_role)) return reply.code(403).send(ERR('FORBIDDEN', 'Your organization role does not allow this action.'));
   await query('DELETE FROM subkeys WHERE id = $1 AND project_id = $2', [req.params.id, project.id]);
   return { success: true };
 });
@@ -313,6 +349,7 @@ fastify.patch('/api/subkeys/:id', {
   schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
 }, async (req, reply) => {
   const project = await getProject(req, reply); if (!project) return;
+  if (!['owner', 'admin', 'member'].includes(project.organization_role)) return reply.code(403).send(ERR('FORBIDDEN', 'Your organization role does not allow this action.'));
   const { id } = req.params;
   const body = req.body || {};
   const updates = [];
@@ -358,6 +395,7 @@ fastify.post('/api/subkeys', {
   schema: { body: { type: 'object', required: ['name', 'provider'], properties: { name: { type: 'string', minLength: 1 }, provider: { type: 'string' }, master_key_id: { type: ['string', 'null'] } } } },
 }, async (req, reply) => {
   const project = await getProject(req, reply); if (!project) return;
+  if (!['owner', 'admin', 'member'].includes(project.organization_role)) return reply.code(403).send(ERR('FORBIDDEN', 'Your organization role does not allow this action.'));
   const { name, provider, master_key_id = null, auto_route_on_exhausted = false, monthly_token_limit = 50000, max_requests = 5000, allowed_models = ['all'], spend_limit_usd = null, expires_in_days = null } = req.body || {};
   if (!name || !provider) return reply.code(400).send(ERR('VALIDATION_ERROR', 'name and provider required'));
   const providerConfig = getProvider(provider);
@@ -407,6 +445,7 @@ fastify.patch('/api/quota-requests/:id', {
   schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, body: { type: 'object', required: ['status'], properties: { status: { type: 'string' } } } },
 }, async (req, reply) => {
   const project = await getProject(req, reply); if (!project) return;
+  if (!['owner', 'admin', 'member'].includes(project.organization_role)) return reply.code(403).send(ERR('FORBIDDEN', 'Your organization role does not allow this action.'));
   if (!isUuid(req.params.id)) return reply.code(400).send(ERR('INVALID_ID', 'invalid quota request id'));
   const { status } = req.body || {};
   if (!['approved', 'rejected', 'pending'].includes(status)) return reply.code(400).send(ERR('VALIDATION_ERROR', 'status must be approved|rejected|pending'));
@@ -557,11 +596,15 @@ async function start() {
       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='request_logs' AND column_name='request_id') AS request_log_request_id_ok,
       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='request_logs' AND column_name='provider') AS request_log_provider_ok,
       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='request_logs' AND column_name='error_reason') AS request_log_error_reason_ok,
-      EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='request_logs' AND column_name='estimated_cost_usd') AS request_log_cost_ok
+      EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='request_logs' AND column_name='estimated_cost_usd') AS request_log_cost_ok,
+      EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='users') AS users_ok,
+      EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='organizations') AS organizations_ok,
+      EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='organization_members') AS organization_members_ok,
+      EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='projects' AND column_name='organization_id') AS project_org_ok
   `);
   const c = schemaChecks[0] || {};
-  if (!(c.projects_ok && c.subkeys_token_cipher_ok && c.subkeys_token_iv_ok && c.subkeys_token_tag_ok && c.health_ok && c.error_logs_ok && c.request_log_request_id_ok && c.request_log_provider_ok && c.request_log_error_reason_ok && c.request_log_cost_ok)) {
-    throw new Error('Schema drift detected. Apply migrations in order: 001_initial_postgres.sql, 002_health_monitoring.sql, 003_request_error_logs.sql, 004_request_log_details.sql');
+  if (!(c.projects_ok && c.subkeys_token_cipher_ok && c.subkeys_token_iv_ok && c.subkeys_token_tag_ok && c.health_ok && c.error_logs_ok && c.request_log_request_id_ok && c.request_log_provider_ok && c.request_log_error_reason_ok && c.request_log_cost_ok && c.users_ok && c.organizations_ok && c.organization_members_ok && c.project_org_ok)) {
+    throw new Error('Schema drift detected. Apply migrations in order: 001_initial_postgres.sql, 002_health_monitoring.sql, 003_request_error_logs.sql, 004_request_log_details.sql, 005_auth_organizations.sql');
   }
 
   const writeDailyHealth = async () => {
