@@ -632,6 +632,10 @@ const OPENAI_ENDPOINT_COVERAGE = [
   { method: 'POST', path: '/v1/chat/completions', category: 'responses_chat_completions', status: 'supported' },
   { method: 'POST', path: '/v1/responses', category: 'responses_chat_completions', status: 'supported' },
   { method: 'POST', path: '/v1/responses/create', category: 'responses_chat_completions', status: 'supported_alias' },
+  { method: 'GET', path: '/v1/responses/{response_id}', category: 'responses_chat_completions', status: 'declared_not_supported' },
+  { method: 'DELETE', path: '/v1/responses/{response_id}', category: 'responses_chat_completions', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/responses/{response_id}/cancel', category: 'responses_chat_completions', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/responses/{response_id}/input_items', category: 'responses_chat_completions', status: 'declared_not_supported' },
   { method: 'POST', path: '/v1/completions', category: 'legacy_completions', status: 'supported_compatibility' },
   { method: 'POST', path: '/v1/audio/speech', category: 'audio', status: 'declared_not_supported' },
   { method: 'POST', path: '/v1/audio/transcriptions', category: 'audio', status: 'declared_not_supported' },
@@ -649,6 +653,8 @@ const OPENAI_ENDPOINT_COVERAGE = [
   { method: 'POST', path: '/v1/fine_tuning/jobs', category: 'fine_tuning', status: 'declared_not_supported' },
   { method: 'GET', path: '/v1/fine_tuning/jobs/{job_id}', category: 'fine_tuning', status: 'declared_not_supported' },
   { method: 'POST', path: '/v1/fine_tuning/jobs/{job_id}/cancel', category: 'fine_tuning', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/fine_tuning/jobs/{job_id}/events', category: 'fine_tuning', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/fine_tuning/jobs/{job_id}/checkpoints', category: 'fine_tuning', status: 'declared_not_supported' },
   { method: 'GET', path: '/v1/assistants', category: 'assistants_threads', status: 'declared_not_supported' },
   { method: 'POST', path: '/v1/assistants', category: 'assistants_threads', status: 'declared_not_supported' },
   { method: 'GET', path: '/v1/assistants/{assistant_id}', category: 'assistants_threads', status: 'declared_not_supported' },
@@ -658,6 +664,20 @@ const OPENAI_ENDPOINT_COVERAGE = [
   { method: 'POST', path: '/v1/threads', category: 'assistants_threads', status: 'declared_not_supported' },
   { method: 'POST', path: '/v1/threads/{thread_id}', category: 'assistants_threads', status: 'declared_not_supported' },
   { method: 'DELETE', path: '/v1/threads/{thread_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/threads/{thread_id}/messages', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/{thread_id}/messages', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/threads/{thread_id}/messages/{message_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/{thread_id}/messages/{message_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'DELETE', path: '/v1/threads/{thread_id}/messages/{message_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/threads/{thread_id}/runs', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/{thread_id}/runs', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/runs', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/threads/{thread_id}/runs/{run_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/{thread_id}/runs/{run_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/{thread_id}/runs/{run_id}/cancel', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/{thread_id}/runs/{run_id}/submit_tool_outputs', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/threads/{thread_id}/runs/{run_id}/steps', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/threads/{thread_id}/runs/{run_id}/steps/{step_id}', category: 'assistants_threads', status: 'declared_not_supported' },
   { method: 'POST', path: '/v1/moderations', category: 'moderation', status: 'declared_not_supported' },
 ];
 
@@ -685,6 +705,9 @@ fastify.post('/v1/chat/completions', async (req, reply) => handleGatewayCompleti
 fastify.post('/v1/completions', async (req, reply) => handleGatewayCompletion(req, reply, { endpoint: 'completions' }));
 fastify.post('/v1/responses', async (req, reply) => handleGatewayCompletion(req, reply, { endpoint: 'responses' }));
 fastify.post('/v1/responses/create', async (req, reply) => handleGatewayCompletion(req, reply, { endpoint: 'responses' }));
+fastify.route({ method: ['GET', 'DELETE'], url: '/v1/responses/:response_id', handler: unsupportedOpenAIEndpoint('responses_chat_completions', '/v1/responses/{response_id}') });
+fastify.post('/v1/responses/:response_id/cancel', unsupportedOpenAIEndpoint('responses_chat_completions', 'POST /v1/responses/{response_id}/cancel'));
+fastify.get('/v1/responses/:response_id/input_items', unsupportedOpenAIEndpoint('responses_chat_completions', 'GET /v1/responses/{response_id}/input_items'));
 
 fastify.post('/v1/audio/speech', unsupportedOpenAIEndpoint('audio', 'POST /v1/audio/speech'));
 fastify.post('/v1/audio/transcriptions', unsupportedOpenAIEndpoint('audio', 'POST /v1/audio/transcriptions'));
@@ -699,10 +722,21 @@ fastify.get('/v1/files/:file_id/content', unsupportedOpenAIEndpoint('files', 'GE
 fastify.route({ method: ['GET', 'POST'], url: '/v1/fine_tuning/jobs', handler: unsupportedOpenAIEndpoint('fine_tuning', '/v1/fine_tuning/jobs') });
 fastify.get('/v1/fine_tuning/jobs/:job_id', unsupportedOpenAIEndpoint('fine_tuning', 'GET /v1/fine_tuning/jobs/{job_id}'));
 fastify.post('/v1/fine_tuning/jobs/:job_id/cancel', unsupportedOpenAIEndpoint('fine_tuning', 'POST /v1/fine_tuning/jobs/{job_id}/cancel'));
+fastify.get('/v1/fine_tuning/jobs/:job_id/events', unsupportedOpenAIEndpoint('fine_tuning', 'GET /v1/fine_tuning/jobs/{job_id}/events'));
+fastify.get('/v1/fine_tuning/jobs/:job_id/checkpoints', unsupportedOpenAIEndpoint('fine_tuning', 'GET /v1/fine_tuning/jobs/{job_id}/checkpoints'));
 fastify.route({ method: ['GET', 'POST'], url: '/v1/assistants', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/assistants') });
 fastify.route({ method: ['GET', 'POST', 'DELETE'], url: '/v1/assistants/:assistant_id', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/assistants/{assistant_id}') });
 fastify.post('/v1/threads', unsupportedOpenAIEndpoint('assistants_threads', 'POST /v1/threads'));
 fastify.route({ method: ['GET', 'POST', 'DELETE'], url: '/v1/threads/:thread_id', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/threads/{thread_id}') });
+fastify.route({ method: ['GET', 'POST'], url: '/v1/threads/:thread_id/messages', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/threads/{thread_id}/messages') });
+fastify.route({ method: ['GET', 'POST', 'DELETE'], url: '/v1/threads/:thread_id/messages/:message_id', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/threads/{thread_id}/messages/{message_id}') });
+fastify.route({ method: ['GET', 'POST'], url: '/v1/threads/:thread_id/runs', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/threads/{thread_id}/runs') });
+fastify.post('/v1/threads/runs', unsupportedOpenAIEndpoint('assistants_threads', 'POST /v1/threads/runs'));
+fastify.route({ method: ['GET', 'POST'], url: '/v1/threads/:thread_id/runs/:run_id', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/threads/{thread_id}/runs/{run_id}') });
+fastify.post('/v1/threads/:thread_id/runs/:run_id/cancel', unsupportedOpenAIEndpoint('assistants_threads', 'POST /v1/threads/{thread_id}/runs/{run_id}/cancel'));
+fastify.post('/v1/threads/:thread_id/runs/:run_id/submit_tool_outputs', unsupportedOpenAIEndpoint('assistants_threads', 'POST /v1/threads/{thread_id}/runs/{run_id}/submit_tool_outputs'));
+fastify.get('/v1/threads/:thread_id/runs/:run_id/steps', unsupportedOpenAIEndpoint('assistants_threads', 'GET /v1/threads/{thread_id}/runs/{run_id}/steps'));
+fastify.get('/v1/threads/:thread_id/runs/:run_id/steps/:step_id', unsupportedOpenAIEndpoint('assistants_threads', 'GET /v1/threads/{thread_id}/runs/{run_id}/steps/{step_id}'));
 fastify.post('/v1/moderations', unsupportedOpenAIEndpoint('moderation', 'POST /v1/moderations'));
 
 async function start() {

@@ -61,7 +61,7 @@ The real provider keys stay hidden inside KeyGate. Users only receive scoped Key
    Authorization: Bearer sk-kg-xxxx
    ```
 
-   KeyGate also declares the other primary OpenAI endpoint categories from the public API surface (`audio`, `images`, `embeddings`, `files`, `fine_tuning`, `assistants`/`threads`, and `moderations`). These routes return a clear `501 ENDPOINT_NOT_SUPPORTED_BY_KEYGATE` response until KeyGate implements provider-safe proxying for that category, so clients do not receive ambiguous 404s.
+   KeyGate now has routes for all endpoint categories listed in the OpenAI endpoint breakdown: responses/chat completions, audio, images, embeddings, files, fine-tuning, assistants/threads, moderation, and models. The text/model routes above are supported proxy routes; the other categories are declared and return a clear `501 ENDPOINT_NOT_SUPPORTED_BY_KEYGATE` response until KeyGate implements provider-safe proxying for that category, so clients do not receive ambiguous 404s.
 
 4. **KeyGate validates and proxies the request** by checking quota, rate limits, status, model access, and expiry before injecting the hidden provider key upstream.
 5. **Everything is logged** so teams can see usage, providers, models, latency, cost, failures, and abuse patterns.
@@ -84,7 +84,7 @@ Most API key managers only store secrets. KeyGate:
 - Enforces quotas and Redis-backed rate limits.
 - Supports multiple providers.
 - Provides health monitoring.
-- Offers supported OpenAI-compatible models, chat completions, legacy completions, and responses endpoints, plus declared 501 coverage for audio, images, embeddings, files, fine-tuning, assistants/threads, and moderation routes.
+- Offers all article-listed OpenAI endpoint categories as concrete routes: supported models, chat completions, legacy completions, and responses proxy routes, plus declared 501 coverage for audio, images, embeddings, files, fine-tuning, assistants/threads, and moderation routes.
 
 ## Simple pitch
 
