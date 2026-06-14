@@ -6,7 +6,7 @@ const fastify = require('fastify')({ logger: { level: 'info' }, genReqId: () => 
 const { createClient } = require('redis');
 const { query, initDb, encryptSecret, decryptSecret } = require('./db');
 const { requireAuth, requireOrgRole, loadUserOrganizations } = require('./auth');
-const { listProviders, listModels, getProvider, getProviderForModel, getDefaultModel, isModelAllowedForProvider, normalizeAllowedModels, normalizeProviderModel, normalizeUsage, estimateCostUsd, callProvider, normalizeProviderResponse } = require('./providers');
+const { listProviders, listModels, getProvider, getProviderForModel, getDefaultModel, isModelAllowedForProvider, normalizeAllowedModels, normalizeProviderModel, normalizeUsage, estimateCostUsd, callProvider, normalizeProviderResponse, toOpenAIChatCompletionResponse } = require('./providers');
 
 const DEFAULT_RPM_LIMIT = Number(process.env.RATE_LIMIT_DEFAULT_PER_MIN || 2);
 const redis = createClient({ url: process.env.REDIS_URL });
@@ -476,24 +476,80 @@ fastify.post('/api/quota-requests', {
   return { success: true, id };
 });
 
-fastify.post('/v1/chat/completions', async (req, reply) => {
-  const started = Date.now();
-  const payload = req.body || {};
-  const source = req.headers['x-keygate-client'] || 'external';
+
+async function loadSubkeyFromBearer(req, reply, payload = {}) {
   const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  const finishMs = () => Date.now() - started;
   if (!bearer) {
     req.log.warn({ event: 'gateway_request_rejected', error_reason: 'missing_authorization', provider: null, model: payload.model || null }, 'gateway request rejected');
-    return reply.code(401).send(ERR('MISSING_AUTHORIZATION', 'Missing Authorization header.'));
+    reply.code(401).send(ERR('MISSING_AUTHORIZATION', 'Missing Authorization header.'));
+    return null;
   }
 
   const { rows } = await query(`SELECT id,project_id,name,provider,master_key_id,auto_route_on_exhausted,status,requests_per_minute_limit,max_requests,request_count,monthly_token_limit,tokens_used,expires_at,allowed_models FROM subkeys WHERE token_hash = $1`, [hashToken(bearer)]);
   const subkey = rows[0];
   if (!subkey) {
     req.log.warn({ event: 'gateway_request_rejected', error_reason: 'invalid_token', provider: null, model: payload.model || null }, 'gateway request rejected');
-    return reply.code(401).send(ERR('INVALID_TOKEN', 'Invalid subkey.'));
+    reply.code(401).send(ERR('INVALID_TOKEN', 'Invalid subkey.'));
+    return null;
   }
+  return subkey;
+}
 
+function getAllowedModelIds(subkey) {
+  const provider = getProvider(subkey.provider);
+  if (!provider) return [];
+  const allowedModels = normalizeAllowedModels(subkey.allowed_models);
+  if (allowedModels.includes('all')) return provider.models.map((model) => model.id);
+  return allowedModels.map((model) => normalizeProviderModel(subkey.provider, model)).filter(Boolean);
+}
+
+function modelObject(modelId) {
+  return { id: modelId, object: 'model', created: 0, owned_by: 'keygate' };
+}
+
+function completionPromptToMessages(prompt) {
+  if (Array.isArray(prompt)) return [{ role: 'user', content: prompt.join('\n') }];
+  return [{ role: 'user', content: String(prompt ?? '') }];
+}
+
+function responsesInputToMessages(input) {
+  if (Array.isArray(input)) {
+    return input.map((item) => {
+      if (item?.role && item?.content !== undefined) return { role: item.role, content: item.content };
+      return { role: 'user', content: typeof item === 'string' ? item : JSON.stringify(item) };
+    });
+  }
+  return [{ role: 'user', content: String(input ?? '') }];
+}
+
+function toResponsesResponse(chatBody = {}, requestedModel = null) {
+  const choice = chatBody.choices?.[0] || {};
+  const text = choice.message?.content || choice.text || '';
+  return {
+    id: chatBody.id || `resp_${randomUUID().replace(/-/g, '')}`,
+    object: 'response',
+    created_at: Math.floor(Date.now() / 1000),
+    status: 'completed',
+    model: chatBody.model || requestedModel,
+    output: [{ id: `msg_${randomUUID().replace(/-/g, '')}`, type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }],
+    output_text: text,
+    usage: chatBody.usage || {},
+  };
+}
+
+async function handleGatewayCompletion(req, reply, { endpoint = 'chat' } = {}) {
+  const started = Date.now();
+  const originalPayload = req.body || {};
+  const source = req.headers['x-keygate-client'] || 'external';
+  const finishMs = () => Date.now() - started;
+  const subkey = await loadSubkeyFromBearer(req, reply, originalPayload);
+  if (!subkey) return;
+
+  const payload = endpoint === 'completions'
+    ? { ...originalPayload, messages: completionPromptToMessages(originalPayload.prompt) }
+    : endpoint === 'responses'
+      ? { ...originalPayload, messages: responsesInputToMessages(originalPayload.input) }
+      : originalPayload;
   const requestedModel = normalizeProviderModel(subkey.provider, payload.model || getDefaultModel(subkey.provider)) || null;
 
   const logAndReject = async (httpCode, errorCode, message, status, errorReason) => {
@@ -516,13 +572,8 @@ fastify.post('/v1/chat/completions', async (req, reply) => {
   if (!providerConfig) return logAndReject(400, 'UNKNOWN_PROVIDER', `Unknown provider ${subkey.provider}`, 'config_error', 'unknown_provider');
   const modelOwner = getProviderForModel(requestedModel);
   if (!modelOwner) return logAndReject(400, 'UNKNOWN_MODEL', `Unknown model ${requestedModel}`, 'rejected', 'unknown_model');
-  if (modelOwner.id !== subkey.provider) {
-    return logAndReject(400, 'MODEL_PROVIDER_MISMATCH', `Model ${requestedModel} does not match provider ${subkey.provider}`, 'rejected', 'model_provider_mismatch');
-  }
-  const allowedModels = normalizeAllowedModels(subkey.allowed_models);
-  const resolvedAllowedModels = allowedModels.includes('all') ? ['all'] : allowedModels.map((model) => normalizeProviderModel(subkey.provider, model)).filter(Boolean);
-  const allowed = resolvedAllowedModels.includes('all') || resolvedAllowedModels.includes(requestedModel);
-  if (!allowed) return logAndReject(403, 'MODEL_NOT_ALLOWED', 'Model not allowed for this subkey.', 'rejected', 'model_not_allowed');
+  if (modelOwner.id !== subkey.provider) return logAndReject(400, 'MODEL_PROVIDER_MISMATCH', `Model ${requestedModel} does not match provider ${subkey.provider}`, 'rejected', 'model_provider_mismatch');
+  if (!getAllowedModelIds(subkey).includes(requestedModel)) return logAndReject(403, 'MODEL_NOT_ALLOWED', 'Model not allowed for this subkey.', 'rejected', 'model_not_allowed');
 
   const mkQuery = subkey.master_key_id
     ? query('SELECT * FROM master_keys WHERE id = $1 AND provider = $2 AND project_id = $3 LIMIT 1', [subkey.master_key_id, subkey.provider, subkey.project_id])
@@ -554,8 +605,105 @@ fastify.post('/v1/chat/completions', async (req, reply) => {
 
   await insertRequestLog({ req, subkey, model: requestedModel, tokensUsed, promptTokens, completionTokens, status, errorReason, source, latencyMs: finishMs(), estimatedCostUsd });
   await query(`UPDATE subkeys SET tokens_used = COALESCE(tokens_used,0) + $1, request_count = COALESCE(request_count,0) + 1 WHERE id = $2`, [tokensUsed, subkey.id]);
+  if (statusCode >= 400) return reply.code(statusCode).send(responseBody);
+  if (endpoint === 'completions') return reply.code(statusCode).send(toOpenAIChatCompletionResponse(responseBody));
+  if (endpoint === 'responses') return reply.code(statusCode).send(toResponsesResponse(responseBody, requestedModel));
   return reply.code(statusCode).send(responseBody);
+}
+
+fastify.get('/v1/models', async (req, reply) => {
+  const subkey = await loadSubkeyFromBearer(req, reply);
+  if (!subkey) return;
+  return { object: 'list', data: getAllowedModelIds(subkey).map(modelObject) };
 });
+
+async function handleModelRetrieve(req, reply) {
+  const requested = req.params.model || req.params['*'];
+  const subkey = await loadSubkeyFromBearer(req, reply, { model: requested });
+  if (!subkey) return;
+  const model = normalizeProviderModel(subkey.provider, requested);
+  if (!model || !getAllowedModelIds(subkey).includes(model)) return reply.code(404).send(ERR('MODEL_NOT_FOUND', 'Model not found for this subkey.'));
+  return modelObject(model);
+}
+
+const OPENAI_ENDPOINT_COVERAGE = [
+  { method: 'GET', path: '/v1/models', category: 'models', status: 'supported' },
+  { method: 'GET', path: '/v1/models/{model}', category: 'models', status: 'supported' },
+  { method: 'POST', path: '/v1/chat/completions', category: 'responses_chat_completions', status: 'supported' },
+  { method: 'POST', path: '/v1/responses', category: 'responses_chat_completions', status: 'supported' },
+  { method: 'POST', path: '/v1/responses/create', category: 'responses_chat_completions', status: 'supported_alias' },
+  { method: 'POST', path: '/v1/completions', category: 'legacy_completions', status: 'supported_compatibility' },
+  { method: 'POST', path: '/v1/audio/speech', category: 'audio', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/audio/transcriptions', category: 'audio', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/audio/translations', category: 'audio', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/images/generations', category: 'images', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/images/edits', category: 'images', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/images/variations', category: 'images', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/embeddings', category: 'embeddings', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/files', category: 'files', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/files', category: 'files', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/files/{file_id}', category: 'files', status: 'declared_not_supported' },
+  { method: 'DELETE', path: '/v1/files/{file_id}', category: 'files', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/files/{file_id}/content', category: 'files', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/fine_tuning/jobs', category: 'fine_tuning', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/fine_tuning/jobs', category: 'fine_tuning', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/fine_tuning/jobs/{job_id}', category: 'fine_tuning', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/fine_tuning/jobs/{job_id}/cancel', category: 'fine_tuning', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/assistants', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/assistants', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/assistants/{assistant_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/assistants/{assistant_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'DELETE', path: '/v1/assistants/{assistant_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'GET', path: '/v1/threads/{thread_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/threads/{thread_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'DELETE', path: '/v1/threads/{thread_id}', category: 'assistants_threads', status: 'declared_not_supported' },
+  { method: 'POST', path: '/v1/moderations', category: 'moderation', status: 'declared_not_supported' },
+];
+
+function unsupportedOpenAIEndpoint(category, route) {
+  return async (req, reply) => {
+    const subkey = await loadSubkeyFromBearer(req, reply, req.body || {});
+    if (!subkey) return;
+    return reply.code(501).send({
+      error: {
+        code: 'ENDPOINT_NOT_SUPPORTED_BY_KEYGATE',
+        message: `${route} is declared for OpenAI compatibility coverage, but KeyGate does not proxy the ${category} API yet.`,
+        category,
+        route,
+        supported_endpoints: OPENAI_ENDPOINT_COVERAGE.filter((item) => item.status.startsWith('supported')).map((item) => `${item.method} ${item.path}`),
+      },
+    });
+  };
+}
+
+fastify.get('/v1', async () => ({ object: 'endpoint_coverage', data: OPENAI_ENDPOINT_COVERAGE }));
+fastify.get('/v1/models/:model', handleModelRetrieve);
+fastify.get('/v1/models/*', handleModelRetrieve);
+
+fastify.post('/v1/chat/completions', async (req, reply) => handleGatewayCompletion(req, reply, { endpoint: 'chat' }));
+fastify.post('/v1/completions', async (req, reply) => handleGatewayCompletion(req, reply, { endpoint: 'completions' }));
+fastify.post('/v1/responses', async (req, reply) => handleGatewayCompletion(req, reply, { endpoint: 'responses' }));
+fastify.post('/v1/responses/create', async (req, reply) => handleGatewayCompletion(req, reply, { endpoint: 'responses' }));
+
+fastify.post('/v1/audio/speech', unsupportedOpenAIEndpoint('audio', 'POST /v1/audio/speech'));
+fastify.post('/v1/audio/transcriptions', unsupportedOpenAIEndpoint('audio', 'POST /v1/audio/transcriptions'));
+fastify.post('/v1/audio/translations', unsupportedOpenAIEndpoint('audio', 'POST /v1/audio/translations'));
+fastify.post('/v1/images/generations', unsupportedOpenAIEndpoint('images', 'POST /v1/images/generations'));
+fastify.post('/v1/images/edits', unsupportedOpenAIEndpoint('images', 'POST /v1/images/edits'));
+fastify.post('/v1/images/variations', unsupportedOpenAIEndpoint('images', 'POST /v1/images/variations'));
+fastify.post('/v1/embeddings', unsupportedOpenAIEndpoint('embeddings', 'POST /v1/embeddings'));
+fastify.route({ method: ['GET', 'POST'], url: '/v1/files', handler: unsupportedOpenAIEndpoint('files', '/v1/files') });
+fastify.route({ method: ['GET', 'DELETE'], url: '/v1/files/:file_id', handler: unsupportedOpenAIEndpoint('files', '/v1/files/{file_id}') });
+fastify.get('/v1/files/:file_id/content', unsupportedOpenAIEndpoint('files', 'GET /v1/files/{file_id}/content'));
+fastify.route({ method: ['GET', 'POST'], url: '/v1/fine_tuning/jobs', handler: unsupportedOpenAIEndpoint('fine_tuning', '/v1/fine_tuning/jobs') });
+fastify.get('/v1/fine_tuning/jobs/:job_id', unsupportedOpenAIEndpoint('fine_tuning', 'GET /v1/fine_tuning/jobs/{job_id}'));
+fastify.post('/v1/fine_tuning/jobs/:job_id/cancel', unsupportedOpenAIEndpoint('fine_tuning', 'POST /v1/fine_tuning/jobs/{job_id}/cancel'));
+fastify.route({ method: ['GET', 'POST'], url: '/v1/assistants', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/assistants') });
+fastify.route({ method: ['GET', 'POST', 'DELETE'], url: '/v1/assistants/:assistant_id', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/assistants/{assistant_id}') });
+fastify.post('/v1/threads', unsupportedOpenAIEndpoint('assistants_threads', 'POST /v1/threads'));
+fastify.route({ method: ['GET', 'POST', 'DELETE'], url: '/v1/threads/:thread_id', handler: unsupportedOpenAIEndpoint('assistants_threads', '/v1/threads/{thread_id}') });
+fastify.post('/v1/moderations', unsupportedOpenAIEndpoint('moderation', 'POST /v1/moderations'));
 
 async function start() {
   await redis.connect();

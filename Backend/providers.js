@@ -297,6 +297,24 @@ function normalizeProviderResponse(provider, body, ok) {
   return body || {};
 }
 
+
+function toOpenAIChatCompletionResponse(body = {}) {
+  const choice = body.choices?.[0] || {};
+  return {
+    id: body.id || `cmpl-${Date.now()}`,
+    object: 'text_completion',
+    created: body.created || Math.floor(Date.now() / 1000),
+    model: body.model,
+    choices: [{
+      text: choice.text ?? choice.message?.content ?? '',
+      index: choice.index || 0,
+      logprobs: null,
+      finish_reason: choice.finish_reason || 'stop',
+    }],
+    usage: body.usage || {},
+  };
+}
+
 module.exports = {
   PROVIDERS,
   listProviders,
@@ -311,4 +329,5 @@ module.exports = {
   estimateCostUsd,
   callProvider,
   normalizeProviderResponse,
+  toOpenAIChatCompletionResponse,
 };
