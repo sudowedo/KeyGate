@@ -48,12 +48,20 @@ The real provider keys stay hidden inside KeyGate. Users only receive scoped Key
 
 1. **Admins add provider keys** for OpenAI, Gemini, Anthropic, Groq, DeepSeek, xAI, and other supported providers. KeyGate stores these as encrypted master keys.
 2. **Admins create scoped subkeys** with provider routing, token quotas, request limits, model restrictions, expiry, and status controls.
-3. **Users call KeyGate** instead of calling providers directly:
+3. **Users call KeyGate** instead of calling providers directly through the OpenAI-compatible gateway endpoints:
 
    ```text
+   GET  https://keygate-backend.onrender.com/v1
+   GET  https://keygate-backend.onrender.com/v1/models
+   GET  https://keygate-backend.onrender.com/v1/models/{model}
    POST https://keygate-backend.onrender.com/v1/chat/completions
+   POST https://keygate-backend.onrender.com/v1/completions
+   POST https://keygate-backend.onrender.com/v1/responses
+   POST https://keygate-backend.onrender.com/v1/responses/create
    Authorization: Bearer sk-kg-xxxx
    ```
+
+   KeyGate now has routes for all endpoint categories listed in the OpenAI endpoint breakdown: responses/chat completions, audio, images, embeddings, files, fine-tuning, assistants/threads, moderation, and models. The text/model routes above are supported proxy routes; the other categories are declared and return a clear `501 ENDPOINT_NOT_SUPPORTED_BY_KEYGATE` response until KeyGate implements provider-safe proxying for that category, so clients do not receive ambiguous 404s.
 
 4. **KeyGate validates and proxies the request** by checking quota, rate limits, status, model access, and expiry before injecting the hidden provider key upstream.
 5. **Everything is logged** so teams can see usage, providers, models, latency, cost, failures, and abuse patterns.
@@ -76,7 +84,7 @@ Most API key managers only store secrets. KeyGate:
 - Enforces quotas and Redis-backed rate limits.
 - Supports multiple providers.
 - Provides health monitoring.
-- Offers an OpenAI-compatible chat completions endpoint.
+- Offers all article-listed OpenAI endpoint categories as concrete routes: supported models, chat completions, legacy completions, and responses proxy routes, plus declared 501 coverage for audio, images, embeddings, files, fine-tuning, assistants/threads, and moderation routes.
 
 ## Simple pitch
 
